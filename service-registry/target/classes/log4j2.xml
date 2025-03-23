@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="INFO" monitorInterval="30">
+    <Properties>
+        <Property name="FILE_PATH" value="logs/service-registry.log"/>
+    </Properties>
+
+    <Appenders>
+        <Console name="Console" target="SYSTEM_OUT">
+            <JsonLayout complete="false" compact="true" eventEol="true" objectMessageAsJsonObject="true">
+                <KeyValuePair key="timestamp" value="$${ctx:timestamp}"/>
+                <KeyValuePair key="level" value="$${ctx:level}"/>
+                <KeyValuePair key="thread" value="$${ctx:thread}"/>
+                <KeyValuePair key="logger" value="$${ctx:logger}"/>
+                <KeyValuePair key="message" value="$${ctx:message}"/>
+            </JsonLayout>
+        </Console>
+        <RollingFile name="FileAppender" fileName="${FILE_PATH}"
+                     filePattern="logs/$${date:yyyy-MM}/service-registry-%d{MM-dd-yyyy}-%i.log">
+            <JsonLayout complete="false" compact="true" eventEol="true" objectMessageAsJsonObject="true">
+                <KeyValuePair key="timestamp" value="$${ctx:timestamp}"/>
+                <KeyValuePair key="level" value="$${ctx:level}"/>
+                <KeyValuePair key="thread" value="$${ctx:thread}"/>
+                <KeyValuePair key="logger" value="$${ctx:logger}"/>
+                <KeyValuePair key="message" value="$${ctx:message}"/>
+            </JsonLayout>
+            <Policies>
+                <TimeBasedTriggeringPolicy/>
+                <SizeBasedTriggeringPolicy size="100 MB"/>
+            </Policies>
+            <DefaultRolloverStrategy max="10"/>
+        </RollingFile>
+    </Appenders>
+
+    <Loggers>
+        <Root level="info">
+            <AppenderRef ref="Console"/>
+            <AppenderRef ref="FileAppender"/>
+        </Root>
+        <Logger name="com.expensetracker" level="debug" additivity="false">
+            <AppenderRef ref="Console"/>
+            <AppenderRef ref="FileAppender"/>
+        </Logger>
+    </Loggers>
+</Configuration> 

@@ -1,10 +1,21 @@
 #!/bin/bash
 
+# Parse command line arguments
+FORCE_REBUILD=false
+for arg in "$@"; do
+    case $arg in
+        --rebuild)
+            FORCE_REBUILD=true
+            shift
+            ;;
+    esac
+done
+
 # Export environment variables
 export MYSQL_ROOT_PASSWORD=password
 export MYSQL_DATABASE=expensetracker
 # Using local MySQL server instead of containerized one
-export SPRING_DATASOURCE_URL=jdbc:mysql://localhost:3306/expensetracker
+export SPRING_DATASOURCE_URL=jdbc:mysql://localhost:3307/expensetracker
 export SPRING_DATASOURCE_USERNAME=root
 export SPRING_DATASOURCE_PASSWORD=password
 export SPRING_PROFILES_ACTIVE=prod
@@ -100,9 +111,21 @@ wait_for_service() {
     print_message "Waiting for $service to be ready..." "$YELLOW"
     while [ $attempt -le $max_attempts ]; do
         if [ "$service" = "Kafka" ]; then
-            if docker exec expensetrackerproject-kafka-1 bash -c "kafka-topics --bootstrap-server kafka:9092 --list" &>/dev/null; then
-                print_message "$service is ready!" "$GREEN"
-                return 0
+            # Get the actual container name for Kafka
+            local kafka_container=$(docker ps --filter "name=kafka" --format "{{.Names}}" | grep -i kafka | head -n 1)
+            if [ -n "$kafka_container" ]; then
+                # Try to list topics to check if Kafka is ready
+                if docker exec $kafka_container bash -c "kafka-topics --bootstrap-server kafka:9092 --list" &>/dev/null; then
+                    print_message "$service is ready!" "$GREEN"
+                    return 0
+                fi
+            else
+                print_message "Kafka container not found. Checking port instead..." "$YELLOW"
+                # Fallback to port check if container not found
+                if ! check_port $port; then
+                    print_message "$service is ready (port check)!" "$GREEN"
+                    return 0
+                fi
             fi
         elif [ "$service" = "Service Registry" ]; then
             if curl -s http://localhost:8761/actuator/health | grep -q "UP"; then
@@ -157,9 +180,9 @@ start_service() {
     local service=$1
     local service_name=$2
     local port=$3
-    
-    print_message "Starting $service_name..." "$YELLOW"
-    if ! docker compose up -d $service; then
+
+    print_message "Building and starting $service_name..." "$YELLOW"
+    if ! docker compose build $service && docker compose up -d $service; then
         handle_docker_build_failure $service
     fi
     wait_for_service $port "$service_name"
@@ -193,45 +216,102 @@ done
 print_message "Stopping any running containers..." "$YELLOW"
 docker compose down
 
+# If force rebuild is enabled, remove all images to ensure fresh builds
+if [ "$FORCE_REBUILD" = true ]; then
+    print_message "Force rebuild enabled. Removing existing images..." "$YELLOW"
+    # Get all service names from docker-compose.yml that have a build directive
+    services=$(grep -A1 "build:" docker-compose.yml | grep -v "build:" | grep -v "\-\-" | awk '{print $1}' | tr -d ':')
+    for service in $services; do
+        # Get the image name for this service
+        image_name=$(docker compose images | grep $service | awk '{print $2}')
+        if [ ! -z "$image_name" ]; then
+            print_message "Removing image for $service..." "$YELLOW"
+            docker rmi $image_name 2>/dev/null || true
+        fi
+    done
+fi
+
 # Check if local MySQL is running and accessible
 print_message "Checking local MySQL connection..." "$YELLOW"
-if mysql -h localhost -u${SPRING_DATASOURCE_USERNAME} -p${SPRING_DATASOURCE_PASSWORD} -e "SELECT 1" >/dev/null 2>&1; then
+if mysql -h localhost -P 3307 -u${SPRING_DATASOURCE_USERNAME} -p${SPRING_DATASOURCE_PASSWORD} -e "SELECT 1" >/dev/null 2>&1; then
     print_message "Local MySQL connection successful!" "$GREEN"
 else
     print_message "Error: Cannot connect to local MySQL server. Please ensure it's running and accessible." "$RED"
-    print_message "You may need to create the database with: mysql -u root -p -e 'CREATE DATABASE IF NOT EXISTS ${MYSQL_DATABASE}'" "$YELLOW"
+    print_message "You may need to create the database with: mysql -h localhost -P 3307 -u root -p -e 'CREATE DATABASE IF NOT EXISTS ${MYSQL_DATABASE}'" "$YELLOW"
     exit 1
 fi
 
 # Check if database exists, create if it doesn't
 print_message "Checking if database exists..." "$YELLOW"
-if ! mysql -h localhost -u${SPRING_DATASOURCE_USERNAME} -p${SPRING_DATASOURCE_PASSWORD} -e "USE ${MYSQL_DATABASE}" >/dev/null 2>&1; then
+if ! mysql -h localhost -P 3307 -u${SPRING_DATASOURCE_USERNAME} -p${SPRING_DATASOURCE_PASSWORD} -e "USE ${MYSQL_DATABASE}" >/dev/null 2>&1; then
     print_message "Creating database ${MYSQL_DATABASE}..." "$YELLOW"
-    mysql -h localhost -u${SPRING_DATASOURCE_USERNAME} -p${SPRING_DATASOURCE_PASSWORD} -e "CREATE DATABASE ${MYSQL_DATABASE}"
+    mysql -h localhost -P 3307 -u${SPRING_DATASOURCE_USERNAME} -p${SPRING_DATASOURCE_PASSWORD} -e "CREATE DATABASE ${MYSQL_DATABASE}"
     print_message "Database created!" "$GREEN"
 else
     print_message "Database ${MYSQL_DATABASE} exists!" "$GREEN"
 fi
 
+# Make sure the user service database configuration is consistent
+print_message "Ensuring user service database configuration is consistent..." "$YELLOW"
+# The user service uses the same database as other services (expensetracker)
+# No need to create a separate database for it
+print_message "User service will use the ${MYSQL_DATABASE} database" "$GREEN"
+
 # Start the service registry
-print_message "Starting Service Registry..." "$YELLOW"
-docker compose up -d service-registry
+print_message "Building and starting Service Registry..." "$YELLOW"
+docker compose build service-registry && docker compose up -d service-registry
 
 # Wait for service registry to be ready
 wait_for_service 8761 "Service Registry"
 
-# Start Kafka and Zookeeper
-print_message "Starting Kafka and Zookeeper..." "$YELLOW"
-docker compose up -d zookeeper kafka
+# Start Zookeeper first
+print_message "Starting Zookeeper..." "$YELLOW"
+docker compose up -d zookeeper
+wait_for_service 2181 "Zookeeper"
 
-# Wait for Kafka to be ready
+# Start Kafka after Zookeeper is ready
+print_message "Starting Kafka..." "$YELLOW"
+docker compose up -d kafka
+
+# Wait for Kafka to be ready with increased timeout
+print_message "Waiting for Kafka to be ready (this may take a moment)..." "$YELLOW"
 wait_for_service 29092 "Kafka"
+
+# Verify Kafka is operational
+print_message "Verifying Kafka connection..." "$YELLOW"
+kafka_container=$(docker ps --filter "name=kafka" --format "{{.Names}}" | grep -i kafka | head -n 1)
+if [ -n "$kafka_container" ]; then
+    retry_count=0
+    max_retries=5
+    while [ $retry_count -lt $max_retries ]; do
+        if docker exec $kafka_container bash -c "kafka-topics --bootstrap-server kafka:9092 --list" &>/dev/null; then
+            print_message "Kafka is fully operational!" "$GREEN"
+            break
+        else
+            retry_count=$((retry_count + 1))
+            if [ $retry_count -eq $max_retries ]; then
+                print_message "Warning: Kafka may not be fully operational, but continuing startup..." "$YELLOW"
+            else
+                print_message "Waiting for Kafka to become fully operational (attempt $retry_count/$max_retries)..." "$YELLOW"
+                sleep 3
+            fi
+        fi
+    done
+else
+    print_message "Warning: Could not verify Kafka operation, but continuing startup..." "$YELLOW"
+fi
 
 # Start core microservices
 print_message "Starting core microservices..." "$YELLOW"
 
-# Start user service
-start_service "user-service" "User Service" 8081
+# Start user service with correct database configuration
+print_message "Building and starting User Service..." "$YELLOW"
+# Override the database URL to match what's expected in the application.yml
+docker compose build user-service && \
+docker compose up -d \
+  --env SPRING_DATASOURCE_URL=jdbc:mysql://localhost:3307/expensetracker \
+  user-service
+wait_for_service 8081 "User Service"
 
 # Start transaction service
 start_service "transaction-service" "Transaction Service" 8082
@@ -240,8 +320,8 @@ start_service "transaction-service" "Transaction Service" 8082
 start_service "budget-service" "Budget Service" 8083
 
 # Start API Gateway
-print_message "Starting API Gateway..." "$YELLOW"
-docker compose up -d api-gateway
+print_message "Building and starting API Gateway..." "$YELLOW"
+docker compose build api-gateway && docker compose up -d api-gateway
 wait_for_service 8080 "API Gateway"
 
 # Start monitoring services
@@ -251,8 +331,8 @@ wait_for_service 9090 "Prometheus"
 wait_for_service 3000 "Grafana"
 
 # Start frontend service
-print_message "Starting Frontend service..." "$YELLOW"
-docker compose up -d frontend-service
+print_message "Building and starting Frontend service..." "$YELLOW"
+docker compose build frontend-service && docker compose up -d frontend-service
 wait_for_service 80 "Frontend Service"
 
 # Print service URLs
@@ -271,6 +351,9 @@ print_message "Docker Network: expense-tracker-network" "$GREEN"
 print_message "Local MySQL Port: 3306" "$GREEN"
 print_message "Kafka Port: 29092" "$GREEN"
 print_message "Zookeeper Port: 22181" "$GREEN"
+
+print_message "\nTip: To force rebuild all services in the future, run:" "$YELLOW"
+print_message "./start.sh --rebuild" "$YELLOW"
 
 # Print logs
 print_message "\nShowing logs (press Ctrl+C to stop):" "$YELLOW"

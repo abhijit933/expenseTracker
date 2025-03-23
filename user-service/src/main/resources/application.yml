@@ -5,7 +5,7 @@ spring:
   application:
     name: user-service
   datasource:
-    url: jdbc:mysql://localhost:3306/expensetracker
+    url: jdbc:mysql://localhost:3307/expensetracker
     username: root
     password: password
     driver-class-name: com.mysql.cj.jdbc.Driver

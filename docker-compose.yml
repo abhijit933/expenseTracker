@@ -1,7 +1,35 @@
-version: '3.8'
+version: "3.8"
 
 services:
-  # Using local MySQL database instead of containerized one
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    restart: always
+    ports:
+      - "3307:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=password
+      - MYSQL_DATABASE=expensetracker
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - expense-tracker-network
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-h",
+          "localhost",
+          "-u",
+          "root",
+          "-ppassword",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # Service Registry (Eureka)
   service-registry:
@@ -33,16 +61,15 @@ services:
       - "8081:8081"
     environment:
       - SPRING_PROFILES_ACTIVE=prod
-      - SPRING_DATASOURCE_URL=jdbc:mysql://host.docker.internal:3306/expensetracker
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql:3306/expensetracker
       - SPRING_DATASOURCE_USERNAME=root
       - SPRING_DATASOURCE_PASSWORD=password
       - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://service-registry:8761/eureka/
     depends_on:
       - service-registry
+      - mysql
     networks:
       - expense-tracker-network
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
   # Transaction Service
   transaction-service:
@@ -51,12 +78,13 @@ services:
       - "8082:8082"
     environment:
       - SPRING_PROFILES_ACTIVE=prod
-      - SPRING_DATASOURCE_URL=jdbc:mysql://host.docker.internal:3306/expensetracker
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql:3306/expensetracker
       - SPRING_DATASOURCE_USERNAME=root
       - SPRING_DATASOURCE_PASSWORD=password
       - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://service-registry:8761/eureka/
     depends_on:
       - service-registry
+      - mysql
     networks:
       - expense-tracker-network
 
@@ -67,13 +95,13 @@ services:
       - "8083:8083"
     environment:
       - SPRING_PROFILES_ACTIVE=prod
-      - SPRING_DATASOURCE_URL=jdbc:mysql://host.docker.internal:3306/expensetracker
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql:3306/expensetracker
       - SPRING_DATASOURCE_USERNAME=root
       - SPRING_DATASOURCE_PASSWORD=password
       - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://service-registry:8761/eureka/
     depends_on:
-      service-registry:
-        condition: service_started
+      - service-registry
+      - mysql
     networks:
       - expense-tracker-network
 
@@ -139,3 +167,4 @@ networks:
 volumes:
   prometheus_data:
   grafana-data:
+  mysql-data:

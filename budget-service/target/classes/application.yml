@@ -5,7 +5,7 @@ spring:
   application:
     name: budget-service
   datasource:
-    url: jdbc:mysql://localhost:3306/expensetracker
+    url: jdbc:mysql://localhost:3307/expensetracker
     username: root
     password: password
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -20,7 +20,7 @@ spring:
 eureka:
   client:
     serviceUrl:
-      defaultZone: http://localhost:8761/eureka/
+      defaultZone: http://service-registry:8761/eureka/
     register-with-eureka: true
     fetch-registry: true
   instance:
